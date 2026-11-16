@@ -28,6 +28,7 @@ static func run_tests() -> Dictionary:
 		_test_landing(tree.root)
 		_test_history(tree.root)
 		_test_reset(tree.root)
+		_test_sidebar_fit(tree.root)
 
 	var output:Array[String] = []
 	output.append("doc_viewer_history: %d passed, %d failed" % [_passed, _failures.size()])
@@ -138,6 +139,35 @@ static func _test_reset(host:Node) -> void:
 	viewer.clear()
 	_check("clear: clears history", viewer._back.size(), 0)
 	_check("clear: empty contents page", [viewer._current, viewer._toc.text], [DocViewer._PAGE_CONTENTS, DocViewer.EMPTY_MESSAGE])
+	viewer.free()
+
+
+## Sidebar rows are cut to one line so a wrapped title can't read as two entries.
+static func _test_sidebar_fit(host:Node) -> void:
+	var viewer = _new_viewer(host, WIDE)
+	var long_title = "A Rather Long Title That Will Not Fit"
+	_check("fit: no limit keeps the title", viewer._fit(long_title, 0.0, 0, false), long_title)
+	_check("fit: room keeps the title", viewer._fit("Alpha", 10000.0, 0, false), "Alpha")
+
+	var cut:String = viewer._fit(long_title, 80.0, 0, false)
+	_check("fit: cut ends in an ellipsis", cut.ends_with(DocViewer._ELLIPSIS), true)
+	_check("fit: cut is a prefix", long_title.begins_with(cut.trim_suffix(DocViewer._ELLIPSIS)), true)
+	var deeper:String = viewer._fit(long_title, 80.0 + viewer._indent_width(), 1, false)
+	_check("fit: indent costs its width", deeper, cut)
+
+	var text:String = viewer._build_contents(0, 30.0)
+	_check("fit: cut rows carry the full title as a hint", text.contains("[hint=Alpha]"), true)
+	_check("fit: contents page is never cut", viewer._build_contents(0).contains(DocViewer._ELLIPSIS), false)
+
+	# The editor theme pads the label; the default headless theme doesn't, so pad it here.
+	viewer._side_toc.size.x = 300.0 # headless layout leaves it near zero
+	var unpadded:float = viewer._sidebar_text_width()
+	var padded = StyleBoxEmpty.new()
+	padded.content_margin_left = 20
+	padded.content_margin_right = 20
+	viewer._side_toc.add_theme_stylebox_override(&"normal", padded)
+	_check("fit: stylebox margins come off the width", unpadded - viewer._sidebar_text_width(), 40.0)
+	_check("fit: no hint underline in the sidebar", viewer._side_toc.hint_underlined, false)
 	viewer.free()
 
 

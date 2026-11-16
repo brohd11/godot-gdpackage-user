@@ -27,6 +27,8 @@ const _SIDEBAR_COLUMNS = 28
 const _MIN_CONTENT_COLUMNS = 60
 ## Frames a scroll waits, since label heights only settle once the page is laid out at its real width.
 const _SCROLL_SETTLE_FRAMES = 2
+## Ends a sidebar entry cut to one line; the full title is its tooltip.
+const _ELLIPSIS = "…"
 
 ## History location keys. PATH is only used by external pages.
 const _LOC_PAGE = "page"
@@ -202,6 +204,9 @@ func _ready() -> void:
 	side_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_side_toc = _new_toc()
 	side_margin.add_child(_side_toc)
+	_side_toc.hint_underlined = false # the ellipsis already marks a cut entry; dashes read as stripes
+	# Entries are cut to its width, so a new width (e.g. its scrollbar appearing) re-cuts them.
+	_side_toc.resized.connect(func(): if is_node_ready(): _update_nav())
 
 	_sidebar_rule = VSeparator.new()
 	body.add_child(_sidebar_rule)
@@ -256,6 +261,7 @@ func _new_header_button(parent:Control, icon_name:StringName, text:String, toolt
 	var button = Button.new()
 	parent.add_child(button)
 	button.focus_mode = Control.FOCUS_NONE
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER # icon buttons stretch tall beside the text one
 	button.tooltip_text = tooltip
 	# Editor icon where there is an editor theme to take one from, the text everywhere else.
 	if icon_name != &"" and Engine.is_editor_hint():
@@ -518,8 +524,9 @@ func _scroll_to(anchor:String, offset:int) -> void:
 
 ## Contents as one bbcode block: the depth-first order already reads as a tree once each entry is
 ## indented by its depth, with a bold row wherever the walk enters a new directory.
-## [param highlight] is the doc to mark as the current page.
-func _build_contents(highlight:int = _PAGE_CONTENTS) -> String:
+## [param highlight] is the doc to mark as the current page. A [param fit_width] above 0 cuts each
+## entry to one line of that many pixels, for the sidebar - wrapped rows read as two entries.
+func _build_contents(highlight:int = _PAGE_CONTENTS, fit_width:float = 0.0) -> String:
 	if _docs.is_empty():
 		return EMPTY_MESSAGE
 
@@ -533,15 +540,67 @@ func _build_contents(highlight:int = _PAGE_CONTENTS) -> String:
 			while shared < segments.size() and shared < current_dir.size() and segments[shared] == current_dir[shared]:
 				shared += 1
 			for j in range(shared, segments.size()):
-				lines.append(_indented("[b]%s[/b]" % segments[j].capitalize(), j))
+				var dir_title = segments[j].capitalize()
+				var dir_row = "[b]%s[/b]" % _fit(dir_title, fit_width, j, true)
+				lines.append(_indented(_with_hint(dir_row, dir_title, fit_width), j))
 			current_dir = segments
 		var title:String = doc[DocIndex.KEY_TITLE]
+		var depth:int = doc[DocIndex.KEY_DEPTH]
+		var shown = _fit(title, fit_width, depth, i == highlight)
 		if i == highlight:
-			title = "[b]%s[/b]" % title
-		var link = "[url=%s]%s[/url]" % [doc[DocIndex.KEY_PATH], title]
-		lines.append(_indented(link, doc[DocIndex.KEY_DEPTH]))
+			shown = "[b]%s[/b]" % shown
+		var link = "[url=%s]%s[/url]" % [doc[DocIndex.KEY_PATH], shown]
+		lines.append(_indented(_with_hint(link, title, fit_width), depth))
 
 	return "\n".join(lines)
+
+
+## [param text] cut with an ellipsis to fit [param width] pixels after [param depth] indents, in
+## the sidebar's normal or bold font. A width of 0 means no limit.
+func _fit(text:String, width:float, depth:int, bold:bool) -> String:
+	if width <= 0.0:
+		return text
+	var font = _side_toc.get_theme_font(&"bold_font" if bold else &"normal_font")
+	var font_size = _side_toc.get_theme_font_size(&"bold_font_size" if bold else &"normal_font_size")
+	var avail = width - depth * _indent_width()
+	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= avail:
+		return text
+	# Longest prefix that still fits with the ellipsis on.
+	var lo := 0
+	var hi := text.length()
+	while lo < hi:
+		var mid = ceili((lo + hi) / 2.0)
+		var cut = text.left(mid).strip_edges(false, true) + _ELLIPSIS
+		if font.get_string_size(cut, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= avail:
+			lo = mid
+		else:
+			hi = mid - 1
+	return text.left(lo).strip_edges(false, true) + _ELLIPSIS
+
+
+## Wraps [param row] in a tooltip of the full [param title] when fitting cut it.
+func _with_hint(row:String, title:String, fit_width:float) -> String:
+	if fit_width <= 0.0 or not row.contains(_ELLIPSIS):
+		return row
+	return "[hint=%s]%s[/hint]" % [title, row]
+
+
+## One [indent] level in pixels, as RichTextLabel measures it: tab_size spaces of its normal font.
+func _indent_width() -> float:
+	var font = _side_toc.get_theme_font(&"normal_font")
+	var font_size = _side_toc.get_theme_font_size(&"normal_font_size")
+	return _side_toc.tab_size * font.get_char_size(" ".unicode_at(0), font_size).x
+
+
+## Pixels a sidebar entry may take, inside the label's stylebox margins (the editor theme's are
+## 16px a side). Falls back to the sidebar's set width before the first layout, and keeps a
+## character spare so a near-fit is cut rather than wrapped.
+func _sidebar_text_width() -> float:
+	var width = _side_toc.size.x
+	if width <= 0.0:
+		width = _sidebar.custom_minimum_size.x - 2 * roundi(8 * _ui_scale())
+	width -= _side_toc.get_theme_stylebox(&"normal").get_minimum_size().x
+	return maxf(width - _char_width(), 1.0)
 
 
 ## Every [indent] closed on its own line, or the rows after a nested one inherit its depth.
@@ -584,7 +643,7 @@ func _update_nav() -> void:
 	_sidebar.visible = sidebar
 	_sidebar_rule.visible = sidebar
 	if sidebar:
-		var text = _build_contents(_current)
+		var text = _build_contents(_current, _sidebar_text_width())
 		if _side_toc.text != text: # resizes land here too, and a re-parse is not free
 			_side_toc.text = text
 	_contents_button.visible = multiple and not sidebar and _current != _PAGE_CONTENTS
