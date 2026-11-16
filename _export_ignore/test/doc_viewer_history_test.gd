@@ -159,14 +159,14 @@ static func _test_sidebar_fit(host:Node) -> void:
 	_check("fit: cut rows carry the full title as a hint", text.contains("[hint=Alpha]"), true)
 	_check("fit: contents page is never cut", viewer._build_contents(0).contains(DocViewer._ELLIPSIS), false)
 
-	# The editor theme pads the label; the default headless theme doesn't, so pad it here.
+	# The override replaces the active theme's stylebox (the editor's pads 16px a side, headless
+	# none), so the result is theme-independent.
 	viewer._side_toc.size.x = 300.0 # headless layout leaves it near zero
-	var unpadded:float = viewer._sidebar_text_width()
 	var padded = StyleBoxEmpty.new()
 	padded.content_margin_left = 20
 	padded.content_margin_right = 20
 	viewer._side_toc.add_theme_stylebox_override(&"normal", padded)
-	_check("fit: stylebox margins come off the width", unpadded - viewer._sidebar_text_width(), 40.0)
+	_check("fit: stylebox margins come off the width", viewer._sidebar_text_width(), 300.0 - 40.0 - viewer._char_width())
 	_check("fit: no hint underline in the sidebar", viewer._side_toc.hint_underlined, false)
 	viewer.free()
 
